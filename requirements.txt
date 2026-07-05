@@ -1,7 +1,5 @@
 streamlit
 numpy
-scipy
 sympy
-pandas
-plotly.graph_objects
-scipy.optimize
+scipy
+plotly
