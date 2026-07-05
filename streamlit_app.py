@@ -9,63 +9,6 @@ import plotly.graph_objects as go
 # ============================================================
 st.set_page_config(page_title="Optimización No Lineal", layout="wide", page_icon="📐")
 
-# ------------------------------------------------------------
-# TEMA CLARO: fondo blanco y texto negro en toda la interfaz.
-# El tema principal se define en .streamlit/config.toml (recomendado
-# por Streamlit y persistente entre despliegues). El bloque CSS de
-# abajo es un refuerzo para asegurar el contraste en todos los
-# widgets, incluso si config.toml no fuese detectado.
-# ------------------------------------------------------------
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background-color: #FFFFFF;
-        color: #000000;
-    }
-    section[data-testid="stSidebar"] {
-        background-color: #F5F5F5;
-    }
-    h1, h2, h3, h4, h5, h6, p, li, label, span, div, .stMarkdown, .stCaption {
-        color: #000000 !important;
-    }
-    .stTextInput input, .stNumberInput input, .stSelectbox div, textarea {
-        color: #000000 !important;
-        background-color: #FFFFFF !important;
-    }
-    .stButton button {
-        background-color: #FFFFFF;
-        color: #000000;
-        border: 1px solid #000000;
-    }
-    .stButton button:hover {
-        background-color: #EAEAEA;
-        color: #000000;
-    }
-    .stDataFrame, .stTable {
-        color: #000000;
-    }
-    .stRadio label, .stRadio div {
-        color: #000000 !important;
-    }
-    header[data-testid="stHeader"] {
-        background-color: #FFFFFF !important;
-    }
-    [data-testid="stDecoration"] {
-        background-image: none !important;
-        background-color: #FFFFFF !important;
-    }
-    [data-testid="stToolbar"] {
-        background-color: #FFFFFF !important;
-    }
-    [data-testid="stToolbar"] svg, [data-testid="stHeader"] svg {
-        fill: #000000 !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
 st.title("Investigación de Operaciones — Juan Pacheco, Jean Sumba")
 st.markdown(
     "Programa informático para la solución de problemas de programación no lineal (PNL). "
@@ -326,21 +269,14 @@ def graficar_1d(f, x_opt, historial):
     ys = [f([xi]) for xi in xs]
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name="f(x)", line=dict(color="#1f77b4")))
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name="f(x)", line=dict(color="blue")))
 
     hx = [p[0] for p in historial]
     hy = [f([p[0]]) for p in historial]
     fig.add_trace(go.Scatter(x=hx, y=hy, mode="lines+markers", name="Trayectoria Iterativa",
-                              marker=dict(color="#d62728", size=8)))
+                              marker=dict(color="red", size=8)))
 
-    fig.update_layout(
-        title="Visualización 1D - Convergencia",
-        xaxis_title="x1", yaxis_title="f(x1)",
-        template="plotly_white",
-        font=dict(color="black"),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-    )
+    fig.update_layout(title="Visualización 1D - Convergencia", xaxis_title="x1", yaxis_title="f(x1)")
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -355,16 +291,10 @@ def graficar_2d(f, x_opt, historial):
     hx = [p[0] for p in historial]
     hy = [p[1] for p in historial]
     fig.add_trace(go.Scatter(x=hx, y=hy, mode="lines+markers", name="Trayectoria Iterativa",
-                              marker=dict(color="#d62728", size=8)))
+                              marker=dict(color="red", size=8)))
 
-    fig.update_layout(
-        title="Curvas de Nivel 2D - Convergencia (proyección x1 vs x2)",
-        xaxis_title="x1", yaxis_title="x2",
-        template="plotly_white",
-        font=dict(color="black"),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-    )
+    fig.update_layout(title="Curvas de Nivel 2D - Convergencia (proyección x1 vs x2)",
+                       xaxis_title="x1", yaxis_title="x2")
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -494,7 +424,7 @@ elif opcion.startswith("3"):
     for i in range(num_restricciones):
         cols = st.columns(n + 2)
         fila = [cols[j].number_input(f"a_{i+1}{j+1}", value=1.0, key=f"a_{i}_{j}") for j in range(n)]
-        cols[n].markdown("<div style='text-align: center; margin-top: 30px; color:#000000;'>≤</div>",
+        cols[n].markdown("<div style='text-align: center; margin-top: 30px;'>≤</div>",
                           unsafe_allow_html=True)
         bi = cols[n + 1].number_input(f"b_{i+1}", value=10.0, key=f"b_{i}")
         A.append(fila)
@@ -545,7 +475,7 @@ elif opcion.startswith("4"):
     for i in range(num_restricciones):
         cols = st.columns(n + 2)
         fila = [cols[j].number_input(f"a_{i+1}{j+1}", value=1.0, key=f"q_a_{i}_{j}") for j in range(n)]
-        cols[n].markdown("<div style='text-align: center; margin-top: 30px; color:#000000;'>≤</div>",
+        cols[n].markdown("<div style='text-align: center; margin-top: 30px;'>≤</div>",
                           unsafe_allow_html=True)
         bi = cols[n + 1].number_input(f"b_{i+1}", value=10.0, key=f"q_b_{i}")
         A.append(fila)
