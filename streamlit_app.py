@@ -1,53 +1,62 @@
 import streamlit as st
 import numpy as np
 import sympy as sp
-from scipy.optimize import linprog, minimize_scalar, minimize
+from scipy.optimize import minimize
 import plotly.graph_objects as go
+import pandas as pd
+import itertools
 
 # ============================================================
-# CONFIGURACIÓN DE PÁGINA
+# CONFIGURACIÓN DE PÁGINA Y ESTILOS
 # ============================================================
-st.set_page_config(page_title="Optimización No Lineal", layout="wide", page_icon="📐")
+st.set_page_config(page_title="Programación No Lineal", layout="wide")
 
-st.title("Investigación de Operaciones — Juan Pacheco, Jean Sumba")
-st.markdown(
-    "Programa informático para la solución de problemas de programación no lineal (PNL). "
-    "Desarrollado en Python con Streamlit. Cada módulo implementa el algoritmo solicitado "
-    "en la guía del proyecto: **Sección Dorada**, **Newton-Raphson**, **Frank-Wolfe** y "
-    "**Conjunto Activo (KKT)**."
-)
+st.markdown("""
+    <style>
+    .main-header {
+        background-color: #0F3050;
+        padding: 10px 20px;
+        border-radius: 8px;
+        color: white;
+        margin-bottom: 15px;
+    }
+    .main-header h1 { color: white; margin-bottom: 2px; font-size: 1.5rem;}
+    .main-header h3 { color: #A0C0DF; margin-top: 0px; margin-bottom: 5px; font-size: 1rem; font-weight: normal;}
+    .main-header p { color: #D0E0EF; font-size: 0.85rem; margin-bottom: 0px;}
+    .stButton>button {
+        background-color: #008C7A;
+        color: white;
+        font-weight: bold;
+        border-radius: 5px;
+        width: 100%;
+        margin-top: 15px;
+    }
+    .stButton>button:hover { background-color: #006B5D; color: white; }
+    </style>
+    <div class="main-header">
+        <h1>PROGRAMACIÓN NO LINEAL</h1>
+        <h3>Universidad de Cuenca</h3>
+        <p><b>Materia:</b> Investigación de Operaciones | <b>Carrera:</b> Ingeniería en Telecomunicaciones | <b>Autores:</b> Juan Pacheco, Jean Sumba</p>
+    </div>
+""", unsafe_allow_html=True)
 
 # ============================================================
-# FUNCIONES AUXILIARES Y MATEMÁTICAS
+# PARSERS Y MATEMÁTICA SIMBÓLICA
 # ============================================================
-
-def crear_funcion(expr_str, nombres_variables):
-    """
-    Convierte un string matemático en funciones evaluables de f(x) y su gradiente.
-    """
-    simbolos = [sp.Symbol(n) for n in nombres_variables]
+def crear_funcion_1d(expr_str):
+    x = sp.Symbol('x')
     expr = sp.sympify(expr_str)
-    grad_expr = [sp.diff(expr, s) for s in simbolos]
+    f_prime = sp.diff(expr, x)
+    f_double_prime = sp.diff(f_prime, x)
+    
+    f_lamb = sp.lambdify(x, expr, "numpy")
+    fp_lamb = sp.lambdify(x, f_prime, "numpy")
+    fdp_lamb = sp.lambdify(x, f_double_prime, "numpy")
+    
+    return lambda v: float(f_lamb(v)), lambda v: float(fp_lamb(v)), lambda v: float(fdp_lamb(v)), expr, f_prime, f_double_prime
 
-    f_lamb = sp.lambdify(simbolos, expr, "numpy")
-    grad_lamb = [sp.lambdify(simbolos, g, "numpy") for g in grad_expr]
-
-    def f(x):
-        val = f_lamb(*x)
-        return float(val)
-
-    def grad(x):
-        return np.array([float(g(*x)) for g in grad_lamb])
-
-    return f, grad
-
-
-def crear_funcion_hessiana(expr_str, nombres_variables):
-    """
-    Igual que crear_funcion, pero además construye la matriz Hessiana
-    analítica (necesaria para Newton-Raphson multivariable).
-    """
-    simbolos = [sp.Symbol(n) for n in nombres_variables]
+def crear_funcion_nd(expr_str, n):
+    simbolos = [sp.Symbol(f'x{i+1}') for i in range(n)] if n > 3 else sp.symbols('x1 x2 x3')[:n]
     expr = sp.sympify(expr_str)
     grad_expr = [sp.diff(expr, s) for s in simbolos]
     hess_expr = [[sp.diff(g, s2) for s2 in simbolos] for g in grad_expr]
@@ -57,475 +66,436 @@ def crear_funcion_hessiana(expr_str, nombres_variables):
     hess_lamb = [[sp.lambdify(simbolos, h, "numpy") for h in fila] for fila in hess_expr]
 
     def f(x):
-        val = f_lamb(*x)
-        return float(val)
+        return float(f_lamb(*x))
 
     def grad(x):
         return np.array([float(g(*x)) for g in grad_lamb])
 
     def hess(x):
-        n = len(x)
         H = np.zeros((n, n))
         for i in range(n):
             for j in range(n):
                 H[i, j] = float(hess_lamb[i][j](*x))
         return H
 
-    return f, grad, hess
+    return f, grad, hess, expr, grad_expr
 
+def parse_vector(text):
+    return np.array([float(x.strip()) for x in text.split(',')])
 
-def punto_factible_inicial(A, b, n):
-    """
-    Encuentra un punto inicial que cumpla A x <= b usando programación lineal
-    (problema de fase 1 con función objetivo nula).
-    """
-    res = linprog(np.zeros(n), A_ub=A, b_ub=b, bounds=[(None, None)] * n, method="highs")
-    return res.x if res.success else None
+def parse_matrix(text):
+    return np.array([[float(x.strip()) for x in line.split(',')] for line in text.strip().split('\n')])
 
+def parse_restrictions(text):
+    lines = text.strip().split('\n')
+    A = []
+    b = []
+    for line in lines:
+        if not line.strip(): continue
+        parts = line.split(',')
+        coeffs = [float(p.strip()) for p in parts[:-2]]
+        val = float(parts[-2].strip())
+        signo = parts[-1].strip()
+        
+        if signo == '>=':
+            A.append([-c for c in coeffs])
+            b.append(-val)
+        else:
+            A.append(coeffs)
+            b.append(val)
+    return np.array(A), np.array(b)
 
 # ============================================================
-# ALGORITMOS DE OPTIMIZACIÓN (uno por módulo, según la guía)
+# ALGORITMOS DE OPTIMIZACIÓN
 # ============================================================
-
-def busqueda_seccion_dorada(f, a, b, tol=1e-6, max_iter=200):
-    """
-    Módulo 1: Optimización NO restringida de UNA variable.
-    Método de la Sección Dorada (Golden Section Search) sobre un
-    intervalo [a, b] en el que se asume que f es unimodal.
-    """
-    if a >= b:
-        raise ValueError("El límite inferior 'a' debe ser menor que el límite superior 'b'.")
-
-    razon_aurea = (np.sqrt(5) - 1) / 2  # ≈ 0.618
-    c = b - razon_aurea * (b - a)
-    d = a + razon_aurea * (b - a)
-
-    historial = [np.array([(a + b) / 2.0])]
-    it = 0
-    while abs(b - a) > tol and it < max_iter:
-        fc, fd = f([c]), f([d])
-        if fc < fd:
-            b = d
+# TEMA 1
+def biseccion_1d(f_prime, a, b, tol, max_iter):
+    hist = []
+    c = a
+    if f_prime(a) * f_prime(b) > 0:
+        st.warning("El intervalo [a, b] no garantiza una raíz para f'(x) = 0 porque f'(a) y f'(b) tienen el mismo signo.")
+        return c, hist
+    
+    for i in range(max_iter):
+        c = (a + b) / 2
+        fpc = f_prime(c)
+        hist.append({'Iteración': i+1, 'a': a, 'b': b, 'x (c)': c, "f'(c)": fpc})
+        if abs(fpc) < tol or (b - a) / 2 < tol:
+            break
+        if f_prime(a) * fpc < 0:
+            b = c
         else:
             a = c
-        c = b - razon_aurea * (b - a)
-        d = a + razon_aurea * (b - a)
-        historial.append(np.array([(a + b) / 2.0]))
-        it += 1
+    return c, hist
 
-    x_opt = np.array([(a + b) / 2.0])
-    return x_opt, f(x_opt), historial
-
-
-def newton_raphson(f, grad_f, hess_f, x0, tol=1e-6, max_iter=100):
-    """
-    Módulo 2: Optimización NO restringida de VARIAS variables.
-    Método de Newton-Raphson: x_(k+1) = x_k - H(x_k)^-1 * grad f(x_k).
-    Se añade una búsqueda de línea (backtracking/Armijo) sobre la
-    dirección de Newton para garantizar el descenso (Newton amortiguado),
-    lo cual evita divergencia cuando el punto inicial está lejos del óptimo
-    o la Hessiana no es definida positiva en esa zona.
-    """
-    x = np.array(x0, dtype=float)
-    historial = [x.copy()]
-
-    for _ in range(max_iter):
-        g = grad_f(x)
-        if np.linalg.norm(g) < tol:
+def newton_1d(f_prime, f_double_prime, x0, tol, max_iter):
+    hist = []
+    x = x0
+    for i in range(max_iter):
+        fp = f_prime(x)
+        fdp = f_double_prime(x)
+        hist.append({'Iteración': i+1, 'x': x, "f'(x)": fp, "f''(x)": fdp})
+        if abs(fp) < tol:
             break
+        if fdp == 0:
+            st.warning("La segunda derivada es cero, el método de Newton se detiene.")
+            break
+        x = x - fp / fdp
+    return x, hist
 
+# TEMA 2
+def gradiente_nd(f, grad_f, x0, alpha, tol, max_iter, tipo="Minimizar"):
+    hist = []
+    x = np.array(x0, dtype=float)
+    signo = -1 if tipo == "Minimizar" else 1
+    for i in range(max_iter):
+        g = np.array(grad_f(x))
+        norm_g = np.linalg.norm(g)
+        row = {'Iteración': i+1}
+        for j, val in enumerate(x): row[f'x{j+1}'] = val
+        row['f(x)'] = f(x)
+        row['||grad||'] = norm_g
+        hist.append(row)
+        
+        if norm_g < tol: break
+        x = x + signo * alpha * g
+    return x, hist
+
+def newton_nd(f, grad_f, hess_f, x0, tol, max_iter, tipo="Minimizar"):
+    hist = []
+    x = np.array(x0, dtype=float)
+    for i in range(max_iter):
+        g = np.array(grad_f(x))
+        norm_g = np.linalg.norm(g)
+        row = {'Iteración': i+1}
+        for j, val in enumerate(x): row[f'x{j+1}'] = val
+        row['f(x)'] = f(x)
+        row['||grad||'] = norm_g
+        hist.append(row)
+        
+        if norm_g < tol: break
         H = hess_f(x)
         try:
             p = np.linalg.solve(H, -g)
         except np.linalg.LinAlgError:
-            p = -np.linalg.pinv(H) @ g  # Hessiana singular: usar pseudo-inversa
+            p = -np.linalg.pinv(H) @ g
+            
+        if tipo == "Maximizar": p = -p 
+        x = x + p
+    return x, hist
 
-        # Si la dirección no es de descenso, se recurre al descenso por gradiente
-        if np.dot(g, p) > 0:
-            p = -g
-
-        alpha, c1, rho = 1.0, 1e-4, 0.5
-        while f(x + alpha * p) > f(x) + c1 * alpha * np.dot(g, p) and alpha > 1e-10:
-            alpha *= rho
-
-        x_nuevo = x + alpha * p
-        historial.append(x_nuevo.copy())
-
-        if np.linalg.norm(x_nuevo - x) < tol:
-            x = x_nuevo
-            break
-        x = x_nuevo
-
-    return x, f(x), historial
-
-
-def frank_wolfe(f, grad_f, A, b, x0, max_iter=100, tol=1e-6):
-    """
-    Módulo 3: Optimización RESTRINGIDA LINEALMENTE.
-    Método de Frank-Wolfe (gradiente condicional) para min f(x) s.a. A x <= b.
-    """
-    x = np.array(x0, dtype=float)
-    n = len(x)
-    historial = [x.copy()]
-
-    for _ in range(max_iter):
-        c = grad_f(x)
-        res = linprog(c, A_ub=A, b_ub=b, bounds=[(None, None)] * n, method="highs")
-        if not res.success:
-            if res.status == 3:  # LP no acotada
-                raise ValueError(
-                    "El subproblema lineal de Frank-Wolfe resultó no acotado. "
-                    "Este método requiere que la región factible (A x ≤ b) sea un "
-                    "politopo acotado. Agregue restricciones que acoten todas las "
-                    "variables (por ejemplo, x_i ≥ 0 expresado como -x_i ≤ 0, "
-                    "o cotas superiores adicionales)."
-                )
-            break
-        y = res.x
-        d = y - x
-
-        if np.linalg.norm(d) < tol:
-            break
-
-        def phi(t):
-            return f(x + t * d)
-
-        res_line = minimize_scalar(phi, bounds=(0, 1), method="bounded")
-        t_star = res_line.x
-
-        x_nuevo = x + t_star * d
-        historial.append(x_nuevo.copy())
-
-        if np.linalg.norm(x_nuevo - x) < tol:
-            x = x_nuevo
-            break
-        x = x_nuevo
-
-    return x, f(x), historial
-
-
-def resolver_qp_activo(Q, c, A, b, x0, max_iter=50, tol=1e-8):
-    """
-    Módulo 4: Optimización CUADRÁTICA.
-    Minimiza 1/2 x^T Q x + c^T x sujeto a A x <= b usando el método
-    del Conjunto Activo (Active Set / condiciones KKT).
-    """
-    x = np.array(x0, dtype=float)
-    n = len(x)
+# TEMA 3
+def vertices_factibles(f, A, b_vec, tipo="Minimizar"):
+    n = A.shape[1]
     m = A.shape[0]
-    activo = [i for i in range(m) if abs(A[i] @ x - b[i]) < 1e-8]
-    historial = [x.copy()]
+    vertices = []
+    
+    for indices in itertools.combinations(range(m), min(n, m)):
+        A_sub = A[list(indices), :]
+        b_sub = b_vec[list(indices)]
+        if A_sub.shape[0] == n and np.linalg.matrix_rank(A_sub) == n:
+            x = np.linalg.solve(A_sub, b_sub)
+            if np.all(A @ x <= b_vec + 1e-6):
+                vertices.append(x)
+                
+    unique_vertices = []
+    for v in vertices:
+        if not any(np.linalg.norm(v - uv) < 1e-6 for uv in unique_vertices):
+            unique_vertices.append(v)
+            
+    hist = []
+    for i, v in enumerate(unique_vertices):
+        row = {'Vértice': i+1}
+        for j, val in enumerate(v): row[f'x{j+1}'] = val
+        row['f(x)'] = f(v)
+        hist.append(row)
+    
+    if not hist: return None, []
+    opt = min(hist, key=lambda d: d['f(x)']) if tipo == "Minimizar" else max(hist, key=lambda d: d['f(x)'])
+    return np.array([opt[f'x{j+1}'] for j in range(n)]), hist
 
-    for _ in range(max_iter):
-        g = Q @ x + c
-        Aw = A[activo] if activo else np.zeros((0, n))
-        k = len(activo)
+def proyectar(y, A, b_vec):
+    res = minimize(lambda x: np.linalg.norm(x - y)**2, x0=y, constraints={'type': 'ineq', 'fun': lambda x: b_vec - A @ x})
+    return res.x
 
-        M = np.zeros((n + k, n + k))
-        M[:n, :n] = Q
-        if k > 0:
-            M[:n, n:] = Aw.T
-            M[n:, :n] = Aw
-        rhs = np.concatenate([-g, np.zeros(k)])
+def gradiente_proyectado(f, grad_f, A, b_vec, x0, alpha, tol, max_iter, tipo="Minimizar"):
+    hist = []
+    x = np.array(x0, dtype=float)
+    x = proyectar(x, A, b_vec)
+    signo = -1 if tipo == "Minimizar" else 1
+    
+    for i in range(max_iter):
+        g = np.array(grad_f(x))
+        row = {'Iteración': i+1}
+        for j, val in enumerate(x): row[f'x{j+1}'] = val
+        row['f(x)'] = f(x)
+        hist.append(row)
+        
+        y = x + signo * alpha * g
+        x_new = proyectar(y, A, b_vec)
+        if np.linalg.norm(x_new - x) < tol:
+            x = x_new
+            break
+        x = x_new
+        
+    return x, hist
 
-        sol = np.linalg.lstsq(M, rhs, rcond=None)[0]
-        p = sol[:n]
-        lam = sol[n:] if k > 0 else np.array([])
-
-        if np.linalg.norm(p) < tol:
-            if k == 0 or np.all(lam >= -tol):
-                break
-            j = int(np.argmin(lam))
-            activo.pop(j)
-            continue
-
-        alpha = 1.0
-        bloqueante = None
-        for i in range(m):
-            if i in activo:
-                continue
-            Ap = A[i] @ p
-            if Ap > tol:
-                ai = (b[i] - A[i] @ x) / Ap
-                if ai < alpha:
-                    alpha = ai
-                    bloqueante = i
-
-        x = x + alpha * p
-        historial.append(x.copy())
-
-        if bloqueante is not None and alpha < 1.0:
-            activo.append(bloqueante)
-
-    return x, 0.5 * x @ Q @ x + c @ x, historial
-
+# TEMA 4
+def resolver_cuadratica(Q, c, const, A, b_vec, tipo="Minimizar"):
+    def f_obj(x):
+        val = 0.5 * x.T @ Q @ x + c.T @ x + const
+        return val if tipo == "Minimizar" else -val
+    
+    n = Q.shape[0]
+    res = minimize(f_obj, x0=np.zeros(n), constraints={'type': 'ineq', 'fun': lambda x: b_vec - A @ x})
+    x_opt = res.x
+    f_opt = 0.5 * x_opt.T @ Q @ x_opt + c.T @ x_opt + const
+    return x_opt, f_opt
 
 # ============================================================
-# FUNCIONES DE GRAFICACIÓN (tema claro para consistencia visual)
+# FUNCIONES DE GRAFICACIÓN
 # ============================================================
-
-def graficar_1d(f, x_opt, historial):
-    xs = np.linspace(x_opt[0] - 5, x_opt[0] + 5, 200)
-    ys = [f([xi]) for xi in xs]
-
+def graficar_1d(f, x_opt, a, b):
+    xs = np.linspace(min(a, x_opt) - 2, max(b, x_opt) + 2, 400)
+    ys = [f(xi) for xi in xs]
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name="f(x)", line=dict(color="blue")))
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode='lines', name='f(x)', line=dict(color='#0F3050', width=2)))
+    fig.add_trace(go.Scatter(x=[x_opt], y=[f(x_opt)], mode='markers', name='Óptimo', marker=dict(color='red', size=10)))
+    fig.update_layout(title="Gráfica de la función", xaxis_title="x", yaxis_title="f(x)")
+    return fig
 
-    hx = [p[0] for p in historial]
-    hy = [f([p[0]]) for p in historial]
-    fig.add_trace(go.Scatter(x=hx, y=hy, mode="lines+markers", name="Trayectoria Iterativa",
-                              marker=dict(color="red", size=8)))
+def graficar_nd(f, n, x_opt, hist, A=None, b_vec=None):
+    if n != 2:
+        return None
+    
+    margin = 5
+    x_range = np.linspace(x_opt[0] - margin, x_opt[0] + margin, 100)
+    y_range = np.linspace(x_opt[1] - margin, x_opt[1] + margin, 100)
+    X, Y = np.meshgrid(x_range, y_range)
+    Z = np.zeros_like(X)
+    
+    for i in range(X.shape[0]):
+        for j in range(X.shape[1]):
+            val = f([X[i, j], Y[i, j]])
+            if A is not None and b_vec is not None:
+                if any(A @ np.array([X[i, j], Y[i, j]]) - b_vec > 1e-6):
+                    Z[i, j] = np.nan
+                else:
+                    Z[i, j] = val
+            else:
+                Z[i, j] = val
 
-    fig.update_layout(title="Visualización 1D - Convergencia", xaxis_title="x1", yaxis_title="f(x1)")
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def graficar_2d(f, x_opt, historial):
-    x_range = np.linspace(x_opt[0] - 5, x_opt[0] + 5, 60)
-    y_range = np.linspace(x_opt[1] - 5, x_opt[1] + 5, 60)
-    Z = np.array([[f([xi, yi]) for xi in x_range] for yi in y_range])
-
-    fig = go.Figure(data=go.Contour(x=x_range, y=y_range, z=Z, colorscale="Viridis",
-                                     contours_coloring="lines"))
-
-    hx = [p[0] for p in historial]
-    hy = [p[1] for p in historial]
-    fig.add_trace(go.Scatter(x=hx, y=hy, mode="lines+markers", name="Trayectoria Iterativa",
-                              marker=dict(color="red", size=8)))
-
-    fig.update_layout(title="Curvas de Nivel 2D - Convergencia (proyección x1 vs x2)",
-                       xaxis_title="x1", yaxis_title="x2")
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def graficar_proyeccion_2d(f, x_opt, historial):
-    """
-    Proyecta y grafica una función de N variables (N >= 2) sobre el plano
-    x1-x2, fijando el resto de las variables en el valor óptimo encontrado.
-    Permite reutilizar graficar_2d aunque el problema tenga 3 variables.
-    """
-    x_opt = np.asarray(x_opt, dtype=float)
-
-    def f_proyectada(par):
-        x_completo = x_opt.copy()
-        x_completo[0], x_completo[1] = par[0], par[1]
-        return f(x_completo)
-
-    historial_2d = [np.asarray(p[:2], dtype=float) for p in historial]
-    graficar_2d(f_proyectada, x_opt[:2], historial_2d)
-
+    fig = go.Figure(data=go.Contour(x=x_range, y=y_range, z=Z, colorscale='Viridis', contours_coloring='lines'))
+    
+    if hist and 'x1' in hist[0]:
+        hx = [h['x1'] for h in hist]
+        hy = [h['x2'] for h in hist]
+        fig.add_trace(go.Scatter(x=hx, y=hy, mode='lines+markers', name='Iteraciones', marker=dict(color='red', size=6)))
+    
+    fig.add_trace(go.Scatter(x=[x_opt[0]], y=[x_opt[1]], mode='markers', name='Óptimo', marker=dict(color='black', size=10, symbol='star')))
+    fig.update_layout(title="Curvas de Nivel y Región Factible", xaxis_title="x1", yaxis_title="x2")
+    return fig
 
 # ============================================================
-# INTERFAZ PRINCIPAL (SIDEBAR Y MÓDULOS)
+# INTERFAZ PRINCIPAL (Panel Lateral y Lógica)
 # ============================================================
-
-st.sidebar.header("Módulos del Sistema")
-opcion = st.sidebar.radio("Seleccione el tipo de problema:", [
-    "1. No restringida (1 variable) — Sección Dorada",
-    "2. No restringida (Varias variables) — Newton-Raphson",
-    "3. Restringida linealmente — Frank-Wolfe",
-    "4. Cuadrática — Conjunto Activo",
+st.sidebar.markdown("### TEMAS")
+opcion = st.sidebar.radio("Seleccione el método:", [
+    "1. Una variable",
+    "2. Varias variables",
+    "3. Restringida linealmente",
+    "4. Optimización cuadrática"
 ])
 
-# ------------------------------------------------------------
-# MÓDULO 1: OPTIMIZACIÓN NO RESTRINGIDA (1 VARIABLE) — SECCIÓN DORADA
-# ------------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Estado del programa")
+st.sidebar.info(f"Módulo Activo:\n\n{opcion}")
+
 if opcion.startswith("1"):
-    st.header("1. Optimización no restringida de una variable (Sección Dorada)")
-    expr_str = st.text_input("Función objetivo f(x1)", value="x1**2 - 4*x1 + 4")
-
-    col_a, col_b, col_tol = st.columns(3)
-    a = col_a.number_input("Límite inferior del intervalo (a)", value=-10.0)
-    b = col_b.number_input("Límite superior del intervalo (b)", value=10.0)
-    tol = col_tol.number_input("Tolerancia", value=1e-6, format="%.8f")
-
-    st.caption("La Sección Dorada requiere un intervalo [a, b] donde f(x) sea unimodal "
-               "(un único mínimo dentro del intervalo).")
-
-    if st.button("Resolver Problema 1"):
-        try:
-            if a >= b:
-                st.error("El límite inferior debe ser menor que el límite superior.")
+    st.markdown("## 1. Optimización no restringida de una sola variable")
+    col1, col2 = st.columns([1, 2], gap="large")
+    
+    with col1:
+        st.markdown("#### Datos del problema")
+        expr_str = st.text_input("Función f(x):", value="x**3 - 6*x**2 + 9*x + 1")
+        metodo = st.selectbox("Método:", ["Bisección", "Newton"])
+        tipo = st.selectbox("Tipo:", ["Minimizar", "Maximizar"])
+        c1, c2 = st.columns(2)
+        a = c1.number_input("a:", value=0.0)
+        b = c2.number_input("b:", value=3.0)
+        x0 = st.number_input("x0 Newton:", value=1.5)
+        c3, c4 = st.columns(2)
+        tol = c3.number_input("Tolerancia:", value=0.0001, format="%f")
+        max_iter = c4.number_input("Iteraciones:", value=50, step=1)
+        btn_resolver = st.button("Resolver")
+        
+    with col2:
+        if btn_resolver:
+            f, f_prime, f_double_prime, expr, expr_p, expr_dp = crear_funcion_1d(expr_str)
+            
+            if metodo == "Bisección":
+                x_opt, hist = biseccion_1d(f_prime, a, b, tol, max_iter)
             else:
-                f, grad_f = crear_funcion(expr_str, ["x1"])
-                x_opt, f_opt, historial = busqueda_seccion_dorada(f, a, b, tol=tol)
+                x_opt, hist = newton_1d(f_prime, f_double_prime, x0, tol, max_iter)
+                
+            f_opt = f(x_opt)
+            segunda_der = f_double_prime(x_opt)
+            if segunda_der > 0: clasificacion = "Mínimo local"
+            elif segunda_der < 0: clasificacion = "Máximo local"
+            else: clasificacion = "No concluyente"
+            
+            st.success("Cálculo finalizado exitosamente.")
+            t1, t2, t3 = st.tabs(["Respuesta final", "Tabla de iteraciones", "Gráfica"])
+            with t1:
+                st.markdown(f"**Método:** {metodo}")
+                st.markdown(f"**Objetivo seleccionado:** {tipo}")
+                st.markdown(f"**f(x) =** {expr}")
+                st.markdown(f"**f'(x) =** {expr_p}")
+                st.markdown(f"**f''(x) =** {expr_dp}")
+                st.markdown(f"**x óptimo aproximado =** {x_opt:.8f}")
+                st.markdown(f"**f(x óptimo) =** {f_opt:.8f}")
+                st.markdown(f"**f''(x óptimo) =** {segunda_der:.8f}")
+                st.markdown(f"**Clasificación:** {clasificacion}")
+            with t2:
+                if hist: st.dataframe(pd.DataFrame(hist), use_container_width=True)
+            with t3:
+                st.plotly_chart(graficar_1d(f, x_opt, a, b), use_container_width=True)
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.success(f"**Óptimo encontrado:** x1 = {x_opt[0]:.4f}")
-                    st.info(f"**f(x) óptimo:** {f_opt:.6f}")
-                with col2:
-                    res_scipy = minimize(f, [(a + b) / 2], method="BFGS")
-                    st.warning(f"**SciPy (BFGS):** x1 = {res_scipy.x[0]:.4f} | f(x) = {res_scipy.fun:.6f}")
-                    st.write(f"Diferencia de evaluación: {abs(f_opt - res_scipy.fun):.2e}")
-
-                st.subheader("Historial de iteraciones")
-                st.dataframe({"Iteración": range(len(historial)), "x1": [p[0] for p in historial]},
-                             use_container_width=True)
-                graficar_1d(f, x_opt, historial)
-        except Exception as e:
-            st.error(f"Ocurrió un error al resolver el problema: {e}")
-
-# ------------------------------------------------------------
-# MÓDULO 2: OPTIMIZACIÓN NO RESTRINGIDA (VARIAS VARIABLES) — NEWTON-RAPHSON
-# ------------------------------------------------------------
 elif opcion.startswith("2"):
-    st.header("2. Optimización no restringida de varias variables (Newton-Raphson)")
-    st.caption("Escriba f(x) usando hasta 3 variables: x1, x2, x3. Si su problema solo "
-               "necesita 2 variables, simplemente no incluya x3 en la expresión "
-               "(su valor inicial no afectará el resultado).")
-    n = 3
-    variables = ["x1", "x2", "x3"]
-    expr_str = st.text_input("Función objetivo f(x)", value="x1**2 + x2**2 - x1*x2")
+    st.markdown("## 2. Optimización no restringida de varias variables")
+    col1, col2 = st.columns([1, 2], gap="large")
+    
+    with col1:
+        st.markdown("#### Datos del problema")
+        n = st.selectbox("Número de variables:", [2, 3])
+        expr_str = st.text_input("Función:", value="x1**2 + x2**2 - 4*x1 - 6*x2 + 13" if n==2 else "x1**2 + x2**2 + x3**2")
+        metodo = st.selectbox("Método:", ["Gradiente", "Newton"])
+        tipo = st.selectbox("Tipo:", ["Minimizar", "Maximizar"])
+        p0_str = st.text_input("Punto inicial (separado por comas):", value="0,0" if n==2 else "0,0,0")
+        alpha = st.number_input("Alpha:", value=0.1)
+        c1, c2 = st.columns(2)
+        tol = c1.number_input("Tolerancia:", value=0.0001, format="%f")
+        max_iter = c2.number_input("Iteraciones:", value=50, step=1)
+        btn_resolver = st.button("Resolver")
+        
+    with col2:
+        if btn_resolver:
+            x0 = parse_vector(p0_str)
+            f, grad_f, hess_f, expr, grad_expr = crear_funcion_nd(expr_str, n)
+            
+            if metodo == "Gradiente":
+                x_opt, hist = gradiente_nd(f, grad_f, x0, alpha, tol, max_iter, tipo)
+            else:
+                x_opt, hist = newton_nd(f, grad_f, hess_f, x0, tol, max_iter, tipo)
+                
+            f_opt = f(x_opt)
+            H = hess_f(x_opt)
+            eigvals = np.linalg.eigvals(H)
+            if np.all(eigvals > 0): clasificacion = "Mínimo local (Definida positiva)"
+            elif np.all(eigvals < 0): clasificacion = "Máximo local (Definida negativa)"
+            elif np.any(eigvals > 0) and np.any(eigvals < 0): clasificacion = "Punto silla (Indefinida)"
+            else: clasificacion = "No concluyente"
+            
+            st.success("Cálculo finalizado exitosamente.")
+            t1, t2, t3 = st.tabs(["Respuesta final", "Tabla de iteraciones", "Gráfica"])
+            with t1:
+                st.markdown(f"**Método:** {metodo}")
+                st.markdown(f"**Objetivo:** {tipo}")
+                st.markdown(f"**x óptimo =** {np.round(x_opt, 6)}")
+                st.markdown(f"**f(x óptimo) =** {f_opt:.8f}")
+                st.markdown(f"**Clasificación Hessiana:** {clasificacion}")
+            with t2:
+                if hist: st.dataframe(pd.DataFrame(hist), use_container_width=True)
+            with t3:
+                fig = graficar_nd(f, n, x_opt, hist)
+                if fig: st.plotly_chart(fig, use_container_width=True)
+                else: st.info("La visualización topológica solo está disponible para 2 variables.")
 
-    st.write("Punto inicial x0:")
-    cols_x0 = st.columns(n)
-    x0 = np.array([cols_x0[i].number_input(f"x{i+1}_0", value=2.0, key=f"nr_x0_{i}") for i in range(n)])
-
-    if st.button("Resolver Problema 2"):
-        try:
-            f, grad_f, hess_f = crear_funcion_hessiana(expr_str, variables)
-            x_opt, f_opt, historial = newton_raphson(f, grad_f, hess_f, x0)
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.success(f"**Óptimo encontrado:** x = {np.round(x_opt, 4)}")
-                st.info(f"**f(x) óptimo:** {f_opt:.6f}")
-            with col2:
-                res_scipy = minimize(f, x0, method="BFGS")
-                st.warning(f"**SciPy (BFGS):** x = {np.round(res_scipy.x, 4)} | f(x) = {res_scipy.fun:.6f}")
-                st.write(f"Diferencia de evaluación: {abs(f_opt - res_scipy.fun):.2e}")
-
-            st.subheader("Historial de iteraciones")
-            st.dataframe({f"x{i+1}": [p[i] for p in historial] for i in range(n)})
-            graficar_proyeccion_2d(f, x_opt, historial)
-        except Exception as e:
-            st.error(f"Ocurrió un error al resolver el problema: {e}")
-
-# ------------------------------------------------------------
-# MÓDULO 3: OPTIMIZACIÓN RESTRINGIDA LINEALMENTE — FRANK-WOLFE
-# ------------------------------------------------------------
 elif opcion.startswith("3"):
-    st.header("3. Optimización restringida linealmente (Frank-Wolfe)")
-    st.caption("Escriba f(x) usando hasta 3 variables: x1, x2, x3. Si su problema solo "
-               "necesita 2 variables, deje los coeficientes de x3 en 0.")
-    n = 3
-    variables = ["x1", "x2", "x3"]
-    expr_str = st.text_input("Función objetivo f(x)", value="x1**2 + x2**2 - x1*x2")
-
-    st.subheader("Restricciones lineales  A x ≤ b")
-    st.caption("Frank-Wolfe requiere que la región factible sea un politopo **acotado**. "
-               "Incluya suficientes restricciones para cerrar la región en todas las "
-               "direcciones (por ejemplo, x_i ≥ 0 escrito como -x_i ≤ 0, además de cotas "
-               "superiores para cada variable).")
-    num_restricciones = st.number_input("Número de restricciones", min_value=1, max_value=10, value=2)
-
-    A, b = [], []
-    for i in range(num_restricciones):
-        cols = st.columns(n + 2)
-        fila = [cols[j].number_input(f"a_{i+1}{j+1}", value=1.0, key=f"a_{i}_{j}") for j in range(n)]
-        cols[n].markdown("<div style='text-align: center; margin-top: 30px;'>≤</div>",
-                          unsafe_allow_html=True)
-        bi = cols[n + 1].number_input(f"b_{i+1}", value=10.0, key=f"b_{i}")
-        A.append(fila)
-        b.append(bi)
-
-    A = np.array(A)
-    b = np.array(b)
-
-    if st.button("Resolver Problema 3"):
-        try:
-            f, grad_f = crear_funcion(expr_str, variables)
-            x0 = punto_factible_inicial(A, b, n)
-
-            if x0 is None:
-                st.error("No se encontró un punto factible inicial para las restricciones dadas.")
+    st.markdown("## 3. Optimización restringida linealmente")
+    col1, col2 = st.columns([1, 2], gap="large")
+    
+    with col1:
+        st.markdown("#### Datos del problema")
+        n = st.selectbox("Número variables:", [2, 3])
+        expr_str = st.text_input("Función:", value="x1*x2 + 2*x1 + x2")
+        metodo = st.selectbox("Método:", ["Vértices factibles", "Gradiente proyectado"])
+        tipo = st.selectbox("Tipo:", ["Maximizar", "Minimizar"])
+        st.markdown("Restricciones (Ej. 1,0,4,<= que es 1*x1 + 0*x2 <= 4):")
+        restricciones_str = st.text_area("", value="1,0,4,<=\n0,1,6,<=\n3,2,18,<=")
+        p0_str = st.text_input("Punto inicial:", value="1,1" if n==2 else "1,1,1")
+        alpha = st.number_input("Alpha:", value=0.15)
+        c1, c2 = st.columns(2)
+        tol = c1.number_input("Tol:", value=0.0001, format="%f")
+        max_iter = c2.number_input("Iter.:", value=80, step=1)
+        btn_resolver = st.button("Resolver")
+        
+    with col2:
+        if btn_resolver:
+            x0 = parse_vector(p0_str)
+            A, b_vec = parse_restrictions(restricciones_str)
+            f, grad_f, _, expr, _ = crear_funcion_nd(expr_str, n)
+            
+            if metodo == "Vértices factibles":
+                x_opt, hist = vertices_factibles(f, A, b_vec, tipo)
+                if x_opt is None: st.error("No se encontraron vértices factibles con el sistema provisto.")
             else:
-                x_opt, f_opt, historial = frank_wolfe(f, grad_f, A, b, x0)
+                x_opt, hist = gradiente_proyectado(f, grad_f, A, b_vec, x0, alpha, tol, max_iter, tipo)
+                
+            if x_opt is not None:
+                f_opt = f(x_opt)
+                st.success("Cálculo finalizado exitosamente.")
+                t1, t2, t3 = st.tabs(["Respuesta final", "Tabla / Candidatos", "Gráfica"])
+                with t1:
+                    st.markdown(f"**Método:** {metodo}")
+                    st.markdown(f"**Objetivo:** {tipo}")
+                    st.markdown(f"**x óptimo =** {np.round(x_opt, 6)}")
+                    st.markdown(f"**f(x óptimo) =** {f_opt:.8f}")
+                with t2:
+                    if hist: st.dataframe(pd.DataFrame(hist), use_container_width=True)
+                with t3:
+                    fig = graficar_nd(f, n, x_opt, hist if metodo=="Gradiente proyectado" else [], A, b_vec)
+                    if fig: st.plotly_chart(fig, use_container_width=True)
+                    else: st.info("La visualización topológica solo está disponible para 2 variables.")
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.success(f"**Óptimo encontrado:** x = {np.round(x_opt, 4)}")
-                    st.info(f"**f(x) óptimo:** {f_opt:.6f}")
-                with col2:
-                    cons = [{"type": "ineq", "fun": lambda x, i=i: b[i] - A[i] @ x} for i in range(len(b))]
-                    res_scipy = minimize(f, x0, constraints=cons, method="SLSQP")
-                    st.warning(f"**SciPy (SLSQP):** x = {np.round(res_scipy.x, 4)} | f(x) = {res_scipy.fun:.6f}")
-                    st.write(f"Diferencia de evaluación: {abs(f_opt - res_scipy.fun):.2e}")
-
-                st.subheader("Historial de iteraciones")
-                st.dataframe({f"x{i+1}": [p[i] for p in historial] for i in range(n)})
-                graficar_proyeccion_2d(f, x_opt, historial)
-        except Exception as e:
-            st.error(f"Ocurrió un error al resolver el problema: {e}")
-
-# ------------------------------------------------------------
-# MÓDULO 4: OPTIMIZACIÓN CUADRÁTICA — CONJUNTO ACTIVO
-# ------------------------------------------------------------
 elif opcion.startswith("4"):
-    st.header("4. Optimización cuadrática (Conjunto Activo / KKT)")
-    st.caption("Minimiza ½xᵀQx + cᵀx para hasta 3 variables. Si su problema solo necesita "
-               "2 variables, deje la fila/columna de x3 en Q como 0 y c3 = 0.")
-    n = 3
-
-    st.subheader("Restricciones lineales  A x ≤ b")
-    num_restricciones = st.number_input("Número de restricciones", min_value=1, max_value=10, value=2)
-
-    A, b = [], []
-    for i in range(num_restricciones):
-        cols = st.columns(n + 2)
-        fila = [cols[j].number_input(f"a_{i+1}{j+1}", value=1.0, key=f"q_a_{i}_{j}") for j in range(n)]
-        cols[n].markdown("<div style='text-align: center; margin-top: 30px;'>≤</div>",
-                          unsafe_allow_html=True)
-        bi = cols[n + 1].number_input(f"b_{i+1}", value=10.0, key=f"q_b_{i}")
-        A.append(fila)
-        b.append(bi)
-
-    A = np.array(A)
-    b = np.array(b)
-
-    st.subheader("Matriz Q (½ xᵀQx) y vector c (cᵀx)")
-    Q = []
-    st.write("Matriz Q:")
-    for i in range(n):
-        cols = st.columns(n)
-        fila = [cols[j].number_input(f"Q_{i+1}{j+1}", value=2.0 if i == j else 0.0, key=f"Q_{i}_{j}")
-                for j in range(n)]
-        Q.append(fila)
-    Q = np.array(Q)
-
-    st.write("Vector c:")
-    cols_c = st.columns(n)
-    c = np.array([cols_c[i].number_input(f"c_{i+1}", value=0.0, key=f"c_{i}") for i in range(n)])
-
-    if st.button("Resolver Problema 4"):
-        try:
-            x0 = punto_factible_inicial(A, b, n)
-
-            if x0 is None:
-                st.error("No se encontró un punto factible inicial para las restricciones dadas.")
-            else:
-                x_opt, f_opt, historial = resolver_qp_activo(Q, c, A, b, x0)
-
-                def f_obj(x):
-                    # Convertir siempre a arreglo numpy: si x llega como lista
-                    # (p. ej. desde la grafica de contornos), "0.5 * x" fallaría
-                    # con "can't multiply sequence by non-int of type 'float'".
-                    x = np.asarray(x, dtype=float)
-                    return 0.5 * x @ Q @ x + c @ x
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.success(f"**Óptimo encontrado:** x = {np.round(x_opt, 4)}")
-                    st.info(f"**f(x) óptimo:** {f_opt:.6f}")
-                with col2:
-                    cons = [{"type": "ineq", "fun": lambda x, i=i: b[i] - A[i] @ x} for i in range(len(b))]
-                    res_scipy = minimize(f_obj, x0, constraints=cons, method="SLSQP")
-                    st.warning(f"**SciPy (SLSQP):** x = {np.round(res_scipy.x, 4)} | f(x) = {res_scipy.fun:.6f}")
-                    st.write(f"Diferencia de evaluación: {abs(f_opt - res_scipy.fun):.2e}")
-
-                st.subheader("Historial de iteraciones")
-                st.dataframe({f"x{i+1}": [p[i] for p in historial] for i in range(n)})
-                graficar_proyeccion_2d(f_obj, x_opt, historial)
-        except Exception as e:
-            st.error(f"Ocurrió un error al resolver el problema: {e}")
+    st.markdown("## 4. Optimización cuadrática")
+    col1, col2 = st.columns([1, 2], gap="large")
+    
+    with col1:
+        st.markdown("#### Datos del problema cuadrático 2D")
+        q_str = st.text_area("Q 2x2:", value="2,0\n0,2")
+        c_str = st.text_input("c = [c1, c2]:", value="-4,-6")
+        constante = st.number_input("Constante:", value=13.0)
+        tipo = st.selectbox("Tipo:", ["Minimizar", "Maximizar"])
+        restricciones_str = st.text_area("Restricciones 2D:", value="1,0,4,<=\n0,1,6,<=\n3,2,18,<=")
+        btn_resolver = st.button("Resolver cuadrática")
+        
+    with col2:
+        if btn_resolver:
+            Q = parse_matrix(q_str)
+            Q = (Q + Q.T) / 2 # Aseguramos simetría
+            c_vec = parse_vector(c_str)
+            A, b_vec = parse_restrictions(restricciones_str)
+            
+            x_opt, f_opt = resolver_cuadratica(Q, c_vec, constante, A, b_vec, tipo)
+            
+            def f_eval(x): return 0.5 * np.array(x).T @ Q @ np.array(x) + c_vec.T @ np.array(x) + constante
+            
+            eigvals = np.linalg.eigvals(Q)
+            if np.all(eigvals > 0): clasificacion = "Q definida positiva: función convexa. Recomendado para minimizar."
+            elif np.all(eigvals < 0): clasificacion = "Q definida negativa: función cóncava. Recomendado para maximizar."
+            else: clasificacion = "Q indefinida o semidefinida: se revisan candidatos factibles."
+            
+            st.success("Cálculo finalizado exitosamente.")
+            t1, t2 = st.tabs(["Respuesta final", "Gráfica"])
+            with t1:
+                st.markdown(f"**Tipo:** {tipo}")
+                st.markdown(f"**Modelo:** f(x,y)=1/2*[x y]*Q*[x;y] + c'*[x;y] + k")
+                st.markdown(f"**x óptimo aproximado =** {x_opt[0]:.8f}")
+                st.markdown(f"**y óptimo aproximado =** {x_opt[1]:.8f}")
+                st.markdown(f"**f(x,y) óptimo =** {f_opt:.8f}")
+                st.markdown(f"**Análisis de Q:** {clasificacion}")
+            with t2:
+                fig = graficar_nd(f_eval, 2, x_opt, [], A, b_vec)
+                st.plotly_chart(fig, use_container_width=True)
